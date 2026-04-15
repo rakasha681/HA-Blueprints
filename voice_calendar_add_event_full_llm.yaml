@@ -2,22 +2,23 @@ blueprint:
   name: Voice - Calendar add event - Full LLM script
   author: OpenAI
   description: |
-    # Create calendar events by voice using an LLM-exposed script.
+    Create calendar events by voice using an LLM-exposed script.
 
     This blueprint is intended for Assist / voice pipelines where the LLM fills in
     the script fields. It is designed for Google Calendar calendars that support
     the `google.create_event` action.
 
-    #### Setup notes:
+    Setup notes:
     - Select a writable Google calendar entity.
     - Give the script a very clear description.
     - Expose the script to Assist after saving it.
 
-    #### Suggested script description:
+    Suggested script description:
     Create calendar events on my calendar. For all-day events, the end date must be
     the day after the final day. For timed events, provide both a start and end.
+    If the user does not give a location or description, leave those fields empty.
 
-    #### Example requests:
+    Example requests:
     - Add a dentist appointment tomorrow at 3 PM for one hour
     - Put dinner with Alex on Friday at 7 PM at Luigi's
     - Add PTO next Monday as an all-day event
@@ -135,8 +136,9 @@ blueprint:
           default: |
             Optional.
 
-            Provide the event location as plain text when the user mentions one.
-            Otherwise leave empty.
+            Provide the event location as plain text only when the user mentions one.
+            Otherwise provide an empty string.
+            Never provide null, none, or omit this field. Use an empty string instead.
         description_prompt:
           name: Description prompt
           description: Prompt used by the LLM for the event description
@@ -148,7 +150,8 @@ blueprint:
             Optional.
 
             Provide a short event description only when the user explicitly gives
-            extra details that belong in the event body. Otherwise leave empty.
+            extra details that belong in the event body. Otherwise provide an empty string.
+            Never provide null, none, or omit this field. Use an empty string instead.
 
 mode: parallel
 max_exceeded: silent
@@ -177,6 +180,7 @@ fields:
     selector:
       time:
     required: true
+    default: "00:00:00"
   end_date:
     name: End date
     description: !input end_date_prompt
@@ -189,12 +193,14 @@ fields:
     selector:
       time:
     required: true
+    default: "00:00:00"
   location:
     name: Location
     description: !input location_prompt
     selector:
       text:
     required: false
+    default: ""
   description:
     name: Description
     description: !input description_prompt
@@ -202,27 +208,27 @@ fields:
       text:
         multiline: true
     required: false
+    default: ""
 sequence:
   - variables:
-      version: 20260414
-      calendar_entity: !input calendar_entity
+      version: 20260415
       clean_summary: "{{ summary | default('', true) | trim }}"
       clean_location: "{{ location | default('', true) | trim }}"
       clean_description: "{{ description | default('', true) | trim }}"
       is_all_day: "{{ all_day | default(false) }}"
       start_date_obj: "{{ start_date | as_datetime(default='') }}"
       end_date_obj: "{{ end_date | as_datetime(default='') }}"
-      start_time_delta: "{{ start_time | default('00:00:00') | as_timedelta | default('00:00:00', true) }}"
-      end_time_delta: "{{ end_time | default('00:00:00') | as_timedelta | default('00:00:00', true) }}"
+      start_time_value: "{{ start_time | default('00:00:00', true) }}"
+      end_time_value: "{{ end_time | default('00:00:00', true) }}"
       start_dt: >-
-        {% if start_date_obj %}
-          {{ (start_date_obj | as_datetime + as_timedelta(start_time_delta)) | as_local }}
+        {% if start_date_obj != '' %}
+          {{ (start_date ~ ' ' ~ start_time_value) | as_datetime | as_local }}
         {% else %}
           NA
         {% endif %}
       end_dt: >-
-        {% if end_date_obj %}
-          {{ (end_date_obj | as_datetime + as_timedelta(end_time_delta)) | as_local }}
+        {% if end_date_obj != '' %}
+          {{ (end_date ~ ' ' ~ end_time_value) | as_datetime | as_local }}
         {% else %}
           NA
         {% endif %}
@@ -231,9 +237,9 @@ sequence:
           The event title was missing.
         {% elif start_date_obj == '' or end_date_obj == '' %}
           The date could not be determined.
-        {% elif is_all_day and (start_time | default('00:00:00')) != '00:00:00' %}
+        {% elif is_all_day and start_time_value != '00:00:00' %}
           All-day events must use a start time of 00:00:00.
-        {% elif is_all_day and (end_time | default('00:00:00')) != '00:00:00' %}
+        {% elif is_all_day and end_time_value != '00:00:00' %}
           All-day events must use an end time of 00:00:00.
         {% elif is_all_day and (end_date_obj | as_datetime) <= (start_date_obj | as_datetime) %}
           For all-day events, the end date must be after the start date.
@@ -242,13 +248,13 @@ sequence:
         {% elif not is_all_day and (end_dt | as_datetime) <= (start_dt | as_datetime) %}
           The end of the timed event must be after the start.
         {% else %}
-          
+
         {% endif %}
       success_text: >-
         {% if is_all_day %}
           Created all-day event {{ clean_summary }} starting {{ start_date }}.
         {% else %}
-          Created event {{ clean_summary }} from {{ start_date }} {{ start_time }} to {{ end_date }} {{ end_time }}.
+          Created event {{ clean_summary }} from {{ start_date }} {{ start_time_value }} to {{ end_date }} {{ end_time_value }}.
         {% endif %}
 
   - if:
@@ -265,7 +271,7 @@ sequence:
   - choose:
       - conditions:
           - condition: template
-            value_template: "{{ is_all_day }}"
+            value_template: "{{ is_all_day and clean_location != '' and clean_description != '' }}"
         sequence:
           - action: google.create_event
             target:
@@ -274,11 +280,50 @@ sequence:
               summary: "{{ clean_summary }}"
               start_date: "{{ start_date }}"
               end_date: "{{ end_date }}"
-              location: "{{ clean_location if clean_location != '' else none }}"
-              description: "{{ clean_description if clean_description != '' else none }}"
+              location: "{{ clean_location }}"
+              description: "{{ clean_description }}"
+
       - conditions:
           - condition: template
-            value_template: "{{ not is_all_day }}"
+            value_template: "{{ is_all_day and clean_location != '' and clean_description == '' }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date: "{{ start_date }}"
+              end_date: "{{ end_date }}"
+              location: "{{ clean_location }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ is_all_day and clean_location == '' and clean_description != '' }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date: "{{ start_date }}"
+              end_date: "{{ end_date }}"
+              description: "{{ clean_description }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ is_all_day and clean_location == '' and clean_description == '' }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date: "{{ start_date }}"
+              end_date: "{{ end_date }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_all_day and clean_location != '' and clean_description != '' }}"
         sequence:
           - action: google.create_event
             target:
@@ -287,8 +332,43 @@ sequence:
               summary: "{{ clean_summary }}"
               start_date_time: "{{ (start_dt | as_datetime).isoformat() }}"
               end_date_time: "{{ (end_dt | as_datetime).isoformat() }}"
-              location: "{{ clean_location if clean_location != '' else none }}"
-              description: "{{ clean_description if clean_description != '' else none }}"
+              location: "{{ clean_location }}"
+              description: "{{ clean_description }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_all_day and clean_location != '' and clean_description == '' }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date_time: "{{ (start_dt | as_datetime).isoformat() }}"
+              end_date_time: "{{ (end_dt | as_datetime).isoformat() }}"
+              location: "{{ clean_location }}"
+
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_all_day and clean_location == '' and clean_description != '' }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date_time: "{{ (start_dt | as_datetime).isoformat() }}"
+              end_date_time: "{{ (end_dt | as_datetime).isoformat() }}"
+              description: "{{ clean_description }}"
+
+    default:
+      - action: google.create_event
+        target:
+          entity_id: !input calendar_entity
+        data:
+          summary: "{{ clean_summary }}"
+          start_date_time: "{{ (start_dt | as_datetime).isoformat() }}"
+          end_date_time: "{{ (end_dt | as_datetime).isoformat() }}"
 
   - set_conversation_response: "{{ success_text }}"
   - variables:
@@ -297,9 +377,9 @@ sequence:
         summary: "{{ clean_summary }}"
         all_day: "{{ is_all_day }}"
         start_date: "{{ start_date }}"
-        start_time: "{{ start_time }}"
+        start_time: "{{ start_time_value }}"
         end_date: "{{ end_date }}"
-        end_time: "{{ end_time }}"
+        end_time: "{{ end_time_value }}"
         location: "{{ clean_location }}"
         description: "{{ clean_description }}"
         message: "{{ success_text }}"
