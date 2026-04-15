@@ -1,0 +1,307 @@
+blueprint:
+  name: Voice - Calendar add event - Full LLM script
+  author: OpenAI
+  description: |
+    # Create calendar events by voice using an LLM-exposed script.
+
+    This blueprint is intended for Assist / voice pipelines where the LLM fills in
+    the script fields. It is designed for Google Calendar calendars that support
+    the `google.create_event` action.
+
+    #### Setup notes:
+    - Select a writable Google calendar entity.
+    - Give the script a very clear description.
+    - Expose the script to Assist after saving it.
+
+    #### Suggested script description:
+    Create calendar events on my calendar. For all-day events, the end date must be
+    the day after the final day. For timed events, provide both a start and end.
+
+    #### Example requests:
+    - Add a dentist appointment tomorrow at 3 PM for one hour
+    - Put dinner with Alex on Friday at 7 PM at Luigi's
+    - Add PTO next Monday as an all-day event
+    - Create a meeting called Budget Review on April 20 from 9 to 10:30 AM
+  domain: script
+  homeassistant:
+    min_version: 2025.1.0
+  input:
+    calendar_entity:
+      name: Calendar entity
+      description: Select the writable calendar entity to create events in
+      selector:
+        entity:
+          multiple: false
+          filter:
+            domain: calendar
+    prompt_settings:
+      name: Prompt settings for the LLM
+      icon: mdi:robot
+      description: |
+        Tune the field descriptions for your LLM if needed. The defaults are tuned
+        for voice use and try to keep the model from omitting required fields.
+      collapsed: true
+      input:
+        summary_prompt:
+          name: Event title prompt
+          description: Prompt used by the LLM for the event title
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Provide the event title / summary as short natural language text.
+            Examples: Dentist appointment, Dinner with Alex, Budget Review.
+            Do not include date or time unless they are part of the actual title.
+        all_day_prompt:
+          name: All-day prompt
+          description: Prompt used by the LLM to decide if the event is all-day
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Use true when the user requests an all-day event, a day off, vacation,
+            holiday, birthday, or otherwise does not specify a start time.
+            Use false when a specific start time or time range is requested.
+        start_date_prompt:
+          name: Start date prompt
+          description: Prompt used by the LLM for the event start date
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Provide the event start date in the format YYYY-MM-DD.
+            Always resolve relative dates like today, tomorrow, next Friday, this weekend.
+        start_time_prompt:
+          name: Start time prompt
+          description: Prompt used by the LLM for the event start time
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Provide the event start time in HH:MM:SS 24 hour format.
+            For all-day events, always use 00:00:00.
+            For timed events, this must be the requested start time.
+        end_date_prompt:
+          name: End date prompt
+          description: Prompt used by the LLM for the event end date
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Provide the event end date in the format YYYY-MM-DD.
+
+            For timed events on a single day, this is usually the same as the start date.
+            For timed events crossing midnight, provide the next date.
+
+            For all-day events, this must be the day AFTER the final day because the
+            calendar service uses an exclusive end date. A one-day all-day event therefore
+            has an end date equal to start date plus 1 day.
+        end_time_prompt:
+          name: End time prompt
+          description: Prompt used by the LLM for the event end time
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            This argument is mandatory and must always be provided no matter what.
+
+            Provide the event end time in HH:MM:SS 24 hour format.
+            For all-day events, always use 00:00:00.
+            For timed events, this must be later than the start time unless the end date
+            is on a later day.
+        location_prompt:
+          name: Location prompt
+          description: Prompt used by the LLM for the event location
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional.
+
+            Provide the event location as plain text when the user mentions one.
+            Otherwise leave empty.
+        description_prompt:
+          name: Description prompt
+          description: Prompt used by the LLM for the event description
+          selector:
+            text:
+              multiline: true
+              multiple: false
+          default: |
+            Optional.
+
+            Provide a short event description only when the user explicitly gives
+            extra details that belong in the event body. Otherwise leave empty.
+
+mode: parallel
+max_exceeded: silent
+fields:
+  summary:
+    name: Event title
+    description: !input summary_prompt
+    selector:
+      text:
+    required: true
+  all_day:
+    name: All day
+    description: !input all_day_prompt
+    selector:
+      boolean:
+    required: true
+  start_date:
+    name: Start date
+    description: !input start_date_prompt
+    selector:
+      date:
+    required: true
+  start_time:
+    name: Start time
+    description: !input start_time_prompt
+    selector:
+      time:
+    required: true
+  end_date:
+    name: End date
+    description: !input end_date_prompt
+    selector:
+      date:
+    required: true
+  end_time:
+    name: End time
+    description: !input end_time_prompt
+    selector:
+      time:
+    required: true
+  location:
+    name: Location
+    description: !input location_prompt
+    selector:
+      text:
+    required: false
+  description:
+    name: Description
+    description: !input description_prompt
+    selector:
+      text:
+        multiline: true
+    required: false
+sequence:
+  - variables:
+      version: 20260414
+      calendar_entity: !input calendar_entity
+      clean_summary: "{{ summary | default('', true) | trim }}"
+      clean_location: "{{ location | default('', true) | trim }}"
+      clean_description: "{{ description | default('', true) | trim }}"
+      is_all_day: "{{ all_day | default(false) }}"
+      start_date_obj: "{{ start_date | as_datetime(default='') }}"
+      end_date_obj: "{{ end_date | as_datetime(default='') }}"
+      start_time_delta: "{{ start_time | default('00:00:00') | as_timedelta | default('00:00:00', true) }}"
+      end_time_delta: "{{ end_time | default('00:00:00') | as_timedelta | default('00:00:00', true) }}"
+      start_dt: >-
+        {% if start_date_obj %}
+          {{ (start_date_obj | as_datetime + as_timedelta(start_time_delta)) | as_local }}
+        {% else %}
+          NA
+        {% endif %}
+      end_dt: >-
+        {% if end_date_obj %}
+          {{ (end_date_obj | as_datetime + as_timedelta(end_time_delta)) | as_local }}
+        {% else %}
+          NA
+        {% endif %}
+      validation_error: >-
+        {% if clean_summary == '' %}
+          The event title was missing.
+        {% elif start_date_obj == '' or end_date_obj == '' %}
+          The date could not be determined.
+        {% elif is_all_day and (start_time | default('00:00:00')) != '00:00:00' %}
+          All-day events must use a start time of 00:00:00.
+        {% elif is_all_day and (end_time | default('00:00:00')) != '00:00:00' %}
+          All-day events must use an end time of 00:00:00.
+        {% elif is_all_day and (end_date_obj | as_datetime) <= (start_date_obj | as_datetime) %}
+          For all-day events, the end date must be after the start date.
+        {% elif not is_all_day and (start_dt == 'NA' or end_dt == 'NA') %}
+          The date or time could not be determined for the timed event.
+        {% elif not is_all_day and (end_dt | as_datetime) <= (start_dt | as_datetime) %}
+          The end of the timed event must be after the start.
+        {% else %}
+          
+        {% endif %}
+      success_text: >-
+        {% if is_all_day %}
+          Created all-day event {{ clean_summary }} starting {{ start_date }}.
+        {% else %}
+          Created event {{ clean_summary }} from {{ start_date }} {{ start_time }} to {{ end_date }} {{ end_time }}.
+        {% endif %}
+
+  - if:
+      - condition: template
+        value_template: "{{ validation_error | trim != '' }}"
+    then:
+      - set_conversation_response: "{{ validation_error | trim }}"
+      - variables:
+          result:
+            error: "{{ validation_error | trim }}"
+      - stop: "Invalid parameters for calendar event creation"
+        response_variable: result
+
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ is_all_day }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date: "{{ start_date }}"
+              end_date: "{{ end_date }}"
+              location: "{{ clean_location if clean_location != '' else none }}"
+              description: "{{ clean_description if clean_description != '' else none }}"
+      - conditions:
+          - condition: template
+            value_template: "{{ not is_all_day }}"
+        sequence:
+          - action: google.create_event
+            target:
+              entity_id: !input calendar_entity
+            data:
+              summary: "{{ clean_summary }}"
+              start_date_time: "{{ (start_dt | as_datetime).isoformat() }}"
+              end_date_time: "{{ (end_dt | as_datetime).isoformat() }}"
+              location: "{{ clean_location if clean_location != '' else none }}"
+              description: "{{ clean_description if clean_description != '' else none }}"
+
+  - set_conversation_response: "{{ success_text }}"
+  - variables:
+      result:
+        success: true
+        summary: "{{ clean_summary }}"
+        all_day: "{{ is_all_day }}"
+        start_date: "{{ start_date }}"
+        start_time: "{{ start_time }}"
+        end_date: "{{ end_date }}"
+        end_time: "{{ end_time }}"
+        location: "{{ clean_location }}"
+        description: "{{ clean_description }}"
+        message: "{{ success_text }}"
+  - stop: ""
+    response_variable: result
